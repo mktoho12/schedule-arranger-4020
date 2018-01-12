@@ -7,6 +7,7 @@ const User = require('../models/user');
 const Schedule = require('../models/schedule');
 const Candidate = require('../models/candidate');
 const Availability = require('../models/availability');
+const Comment = require('../models/comment');
 
 describe('/login', () => {
   before(() => {
@@ -121,22 +122,61 @@ describe('/schedules/:scheduleId/users/:userId/candidates/:candidateId', () => {
   });
 });
 
+describe('/schedules/:scheduleId/users/:userId/comments', () => {
+  before(() => {
+    passportStub.install(app)
+    passportStub.login({ id: 0, username: 'testuser' })
+  })
+
+  after(() => {
+    passportStub.logout()
+    passportStub.uninstall(app)
+  })
+
+  it('コメントが更新できる', done => {
+    User.upsert({ userId: 0, username: 'testuser' }).then(() => {
+      request(app)
+        .post('/schedules')
+        .send({
+          scheduleName: 'テストコメント更新予定1',
+          memo: 'テストコメント更新メモ',
+          candidates: 'テストコメント更新候補1' })
+        .end((err, res) => {
+          const createdSchedulePath = res.header.location
+          const scheduleId = createdSchedulePath.split('/schedules/')[1]
+          // 更新がされることをテスト
+          request(app)
+            .post(`/schedules/${scheduleId}/users/${0}/comments`)
+            .send({ comment: 'testcomment' })
+            .expect('{"status":"OK","comment":"testcomment"}')
+            .end((err, res) => {
+              Comment.findAll({
+                where: { scheduleId: scheduleId }
+              }).then(comments => {
+                assert.equal(comments.length, 1)
+                assert.equal(comments[0].comment, 'testcomment')
+                deleteScheduleAggregate(scheduleId, done, err)
+              })
+            })
+        })
+    })
+  })
+})
+
 function deleteScheduleAggregate(scheduleId, done, err) {
+  const promiseCommentDestroy = Comment.findAll({
+    where: { scheduleId: scheduleId }
+  }).then(comments => comments.map(c => c.destroy()))
+
   Availability.findAll({
     where: { scheduleId: scheduleId }
-  }).then((availabilities) => {
-    const promises = availabilities.map((a) => { return a.destroy(); });
-    Promise.all(promises).then(() => {
-      Candidate.findAll({
-        where: { scheduleId: scheduleId }
-      }).then((candidates) => {
-        const promises = candidates.map((c) => { return c.destroy(); });
-        Promise.all(promises).then(() => {
-          Schedule.findById(scheduleId).then((s) => { s.destroy(); });
-          if (err) return done(err);
-          done();
-        });
-      });
-    });
+  })
+  .then(availabilities => availabilities.map(a => a.destroy()))
+  .then(() => Candidate.findAll({ where: { scheduleId: scheduleId }}))
+  .then(candidates => Promise.all((candidates.map(c => c.destroy())).concat(promiseCommentDestroy)))
+  .then(() => {
+    Schedule.findById(scheduleId).then(s => s.destroy())
+    if (err) return done(err);
+    done();
   });
 }
